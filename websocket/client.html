@@ -1,0 +1,218 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>RSX102 — Client WebSocket</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: Arial, sans-serif;
+      background: #f4f6f9;
+      color: #2c3e50;
+      padding: 24px;
+      max-width: 800px;
+      margin: 0 auto;
+    }
+    h1 { font-size: 1.4rem; margin-bottom: 4px; color: #2E4057; }
+    .subtitle { color: #888; font-size: 0.9rem; margin-bottom: 20px; }
+
+    .status-bar {
+      display: flex; align-items: center; gap: 10px;
+      background: #fff; border: 1px solid #ddd; border-radius: 8px;
+      padding: 10px 16px; margin-bottom: 16px; font-size: 0.9rem;
+    }
+    .dot {
+      width: 10px; height: 10px; border-radius: 50%;
+      background: #ccc; flex-shrink: 0;
+      transition: background 0.3s;
+    }
+    .dot.connected { background: #2ecc71; }
+    .dot.error     { background: #e74c3c; }
+
+    #log {
+      background: #1e1e2e;
+      border-radius: 8px;
+      padding: 14px;
+      height: 340px;
+      overflow-y: auto;
+      font-family: 'Courier New', monospace;
+      font-size: 0.82rem;
+      margin-bottom: 14px;
+    }
+    .entry { margin-bottom: 4px; line-height: 1.5; }
+    .entry .ts   { color: #555; }
+    .entry .tag  { padding: 1px 6px; border-radius: 3px; font-size: 0.75rem; margin-right: 6px; }
+    .tag-connect { background: #1a5c2a; color: #6fcf97; }
+    .tag-msg     { background: #1a3a5c; color: #56b4e9; }
+    .tag-echo    { background: #3a2a5c; color: #bb86fc; }
+    .tag-info    { background: #3a3a1a; color: #f0c040; }
+    .tag-error   { background: #5c1a1a; color: #ff6b6b; }
+    .entry .text { color: #cdd; }
+
+    .send-row {
+      display: flex; gap: 8px;
+    }
+    #msg-input {
+      flex: 1; padding: 10px 14px;
+      border: 1px solid #ccc; border-radius: 6px;
+      font-size: 0.95rem;
+    }
+    button {
+      padding: 10px 20px; border: none; border-radius: 6px;
+      font-size: 0.9rem; cursor: pointer; font-weight: bold;
+    }
+    #btn-send    { background: #4472C4; color: #fff; }
+    #btn-send:hover { background: #2e5aac; }
+    #btn-send:disabled { background: #aaa; cursor: not-allowed; }
+
+    .frames-panel {
+      margin-top: 18px;
+      background: #fff;
+      border: 1px solid #ddd;
+      border-radius: 8px;
+      padding: 14px;
+      font-size: 0.85rem;
+    }
+    .frames-panel h3 { font-size: 0.95rem; margin-bottom: 8px; color: #2E4057; }
+    .frame-row {
+      display: flex; gap: 8px; align-items: flex-start;
+      padding: 6px 0; border-bottom: 1px solid #f0f0f0;
+    }
+    .frame-dir { font-weight: bold; width: 28px; flex-shrink: 0; }
+    .frame-dir.out { color: #4472C4; }
+    .frame-dir.in  { color: #2ecc71; }
+    .frame-info  { color: #555; }
+    .frame-data  { color: #888; font-family: monospace; }
+  </style>
+</head>
+<body>
+
+<h1>RSX102 — Client WebSocket pédagogique</h1>
+<p class="subtitle">Observez les échanges ici et dans Wireshark (filtre : <code>websocket</code>)</p>
+
+<div class="status-bar">
+  <div class="dot" id="status-dot"></div>
+  <span id="status-text">Connexion en cours…</span>
+</div>
+
+<div id="log"></div>
+
+<div class="send-row">
+  <input id="msg-input" type="text" placeholder='Tapez un message (texte ou JSON)' disabled />
+  <button id="btn-send" disabled onclick="sendMsg()">Envoyer</button>
+</div>
+
+<div class="frames-panel">
+  <h3>Trames WebSocket (dernières 10)</h3>
+  <div id="frames"></div>
+</div>
+
+<script>
+  const WS_URL = 'ws://localhost:8080';
+  let ws, myId;
+  const frames = [];
+
+  /* ── Connexion ─────────────────────────────────────────────────── */
+  function connect() {
+    addLog('info', 'Connexion', `→ ${WS_URL}`);
+    ws = new WebSocket(WS_URL, ['rsx102']);
+
+    ws.onopen = () => {
+      setStatus('connected', 'Connecté à ws://localhost:8080');
+      document.getElementById('msg-input').disabled  = false;
+      document.getElementById('btn-send').disabled   = false;
+      addFrame('out', 'Upgrade', 'HTTP → WebSocket (handshake RFC 6455)');
+    };
+
+    ws.onmessage = (event) => {
+      addFrame('in', 'Text frame', event.data.length + ' octets');
+      try {
+        const msg = JSON.parse(event.data);
+        if (msg.type === 'welcome') {
+          myId = msg.id;
+          addLog('connect', 'Bienvenu·e', msg.message);
+        } else if (msg.type === 'echo') {
+          const txt = typeof msg.data === 'string' ? msg.data : JSON.stringify(msg.data);
+          addLog('echo', msg.from === myId ? 'Écho moi' : msg.from, txt);
+        } else if (msg.type === 'leave') {
+          addLog('info', 'Départ', `Un client a quitté (${msg.clients} restant(s))`);
+        } else {
+          addLog('msg', 'Serveur', JSON.stringify(msg));
+        }
+      } catch {
+        addLog('msg', 'Serveur', event.data);
+      }
+    };
+
+    ws.onclose = (e) => {
+      setStatus('', `Déconnecté (code ${e.code})`);
+      document.getElementById('msg-input').disabled = true;
+      document.getElementById('btn-send').disabled  = true;
+      addFrame('out', 'Close frame', `code ${e.code}`);
+      addLog('info', 'Fermé', `Reconnexion dans 3s…`);
+      setTimeout(connect, 3000);
+    };
+
+    ws.onerror = () => {
+      setStatus('error', 'Erreur — serveur WebSocket démarré ?');
+      addLog('error', 'Erreur', 'Assurez-vous que node server.js tourne sur le port 8080');
+    };
+  }
+
+  /* ── Envoi ─────────────────────────────────────────────────────── */
+  function sendMsg() {
+    const input = document.getElementById('msg-input');
+    const txt   = input.value.trim();
+    if (!txt || !ws || ws.readyState !== WebSocket.OPEN) return;
+    ws.send(txt);
+    addFrame('out', 'Text frame', txt.length + ' octets');
+    addLog('msg', 'Envoyé', txt);
+    input.value = '';
+  }
+
+  document.getElementById('msg-input').addEventListener('keydown', e => {
+    if (e.key === 'Enter') sendMsg();
+  });
+
+  /* ── Helpers UI ────────────────────────────────────────────────── */
+  function setStatus(cls, text) {
+    const dot = document.getElementById('status-dot');
+    dot.className = 'dot ' + cls;
+    document.getElementById('status-text').textContent = text;
+  }
+
+  function addLog(type, label, text) {
+    const el = document.getElementById('log');
+    const ts = new Date().toLocaleTimeString('fr-FR', { hour12: false });
+    const tagClass = { connect:'tag-connect', msg:'tag-msg', echo:'tag-echo',
+                       info:'tag-info', error:'tag-error' }[type] || 'tag-info';
+    el.innerHTML += `<div class="entry">
+      <span class="ts">${ts}</span>
+      <span class="tag ${tagClass}">${label}</span>
+      <span class="text">${escHtml(text)}</span>
+    </div>`;
+    el.scrollTop = el.scrollHeight;
+  }
+
+  function addFrame(dir, type, info) {
+    const ts = new Date().toLocaleTimeString('fr-FR', { hour12: false });
+    frames.push({ dir, type, info, ts });
+    if (frames.length > 10) frames.shift();
+    const el = document.getElementById('frames');
+    el.innerHTML = frames.map(f => `
+      <div class="frame-row">
+        <span class="frame-dir ${f.dir}">${f.dir === 'out' ? '↑' : '↓'}</span>
+        <span class="frame-info">${f.ts} &nbsp; <strong>${f.type}</strong></span>
+        <span class="frame-data">${escHtml(f.info)}</span>
+      </div>`).join('');
+  }
+
+  function escHtml(s) {
+    return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+  }
+
+  connect();
+</script>
+</body>
+</html>
